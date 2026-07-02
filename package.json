@@ -1,0 +1,16 @@
+{
+  "name": "bookkeeper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first personal finance app with encrypted storage, imports, and SimpleFIN sync.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  }
+}

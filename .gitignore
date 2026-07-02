@@ -1,0 +1,7 @@
+.DS_Store
+.env
+data/
+node_modules/
+*.pem
+*.key
+*.crt

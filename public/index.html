@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bookkeeper</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main id="auth" class="auth-shell hidden">
+      <form id="auth-form" class="auth-card">
+        <h1 id="auth-title">Bookkeeper</h1>
+        <label>
+          Username
+          <input id="auth-username" autocomplete="username" required />
+        </label>
+        <label>
+          Password
+          <input id="auth-password" type="password" autocomplete="current-password" required />
+        </label>
+        <button id="auth-submit" type="submit">Continue</button>
+        <p id="auth-note" class="muted"></p>
+      </form>
+    </main>
+
+    <main id="app" class="app hidden">
+      <section class="summary-bar">
+        <div>
+          <span>Cash</span>
+          <strong id="cash-total">$0.00</strong>
+        </div>
+        <div>
+          <span>Debt</span>
+          <strong id="debt-total">$0.00</strong>
+        </div>
+        <div>
+          <span>Net</span>
+          <strong id="net-total">$0.00</strong>
+        </div>
+        <button id="theme-toggle" class="icon-button" type="button" title="Toggle theme">◐</button>
+      </section>
+
+      <nav class="nav">
+        <button data-page="dashboard" class="active" type="button">Accounts</button>
+        <button data-page="transactions" type="button">View All</button>
+        <button data-page="month" type="button">Month Ahead</button>
+        <button data-page="metrics" type="button">Metrics</button>
+        <button data-page="import" type="button">Import</button>
+        <button data-page="settings" type="button">Settings</button>
+        <button data-page="activity" type="button">Activity</button>
+      </nav>
+
+      <section id="page-dashboard" class="page"></section>
+      <section id="page-transactions" class="page hidden"></section>
+      <section id="page-month" class="page hidden"></section>
+      <section id="page-metrics" class="page hidden"></section>
+      <section id="page-import" class="page hidden"></section>
+      <section id="page-settings" class="page hidden"></section>
+      <section id="page-activity" class="page hidden"></section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

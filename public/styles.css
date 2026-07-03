@@ -305,9 +305,26 @@ label {
   padding: 5px 9px;
 }
 
+.category-cell {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
 .category-select {
   min-width: 0;
   padding: 6px 8px;
+}
+
+.icon-inline {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--green-dark);
+  flex: 0 0 auto;
+  font-size: 13px;
+  min-height: 28px;
+  padding: 0 8px;
 }
 
 .amount {

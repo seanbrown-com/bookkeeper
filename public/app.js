@@ -186,7 +186,7 @@ function renderDashboard(accounts) {
         body: JSON.stringify({ transactionId: button.dataset.regular }),
       });
       toast("Added to Month Ahead");
-      await loadBootstrap();
+      button.disabled = true;
     });
   });
 
@@ -268,6 +268,17 @@ async function renderTransactions(reset = false) {
       await renderTransactions(true);
     });
     $("#all-tx").addEventListener("click", async (event) => {
+      const editCategory = event.target.closest("[data-edit-category]");
+      if (editCategory) {
+        const cell = editCategory.closest(".category-cell");
+        cell.innerHTML = renderCategorySelector({
+          id: editCategory.dataset.editCategory,
+          category: editCategory.dataset.currentCategory || "Uncategorized",
+        });
+        cell.querySelector("select")?.focus();
+        return;
+      }
+
       const button = event.target.closest("[data-regular]");
       if (!button || button.disabled) return;
       await api("/api/transactions/regular", {
@@ -275,20 +286,22 @@ async function renderTransactions(reset = false) {
         body: JSON.stringify({ transactionId: button.dataset.regular }),
       });
       toast("Added to Month Ahead");
-      await renderTransactions(true);
+      button.disabled = true;
     });
     $("#all-tx").addEventListener("change", async (event) => {
       const select = event.target.closest("[data-category-transaction]");
       if (!select || !select.value) return;
+      const category = select.value;
       await api("/api/transactions/category", {
         method: "POST",
         body: JSON.stringify({
           transactionId: select.dataset.categoryTransaction,
-          category: select.value,
+          category,
         }),
       });
       toast("Category rule saved");
-      await renderTransactions(true);
+      const cell = select.closest(".category-cell");
+      cell.innerHTML = renderCategoryDisplay({ id: select.dataset.categoryTransaction, category });
     });
     $("#load-more").addEventListener("click", () => renderTransactions(false));
   }
@@ -303,7 +316,7 @@ async function renderTransactions(reset = false) {
       <span class="muted">${tx.date}</span>
       <span class="muted">${escapeHtml(tx.account?.name || "")}</span>
       <span class="desc">${escapeHtml(tx.description)}</span>
-      <span>${renderTransactionCategory(tx)}</span>
+      <span class="category-cell">${renderTransactionCategory(tx)}</span>
       <strong class="amount">${money(tx.amount)}</strong>
       <button class="secondary" data-regular="${tx.id}" type="button" ${tx.isRegularLike ? "disabled" : ""}>Recurring</button>
     </div>
@@ -316,24 +329,35 @@ async function renderTransactions(reset = false) {
 }
 
 function renderTransactionCategory(tx) {
-  if (tx.category !== "Uncategorized") return `<span class="category-pill">${escapeHtml(tx.category || "Uncategorized")}</span>`;
+  if (tx.category !== "Uncategorized") return renderCategoryDisplay(tx);
+  return renderCategorySelector(tx);
+}
+
+function renderCategoryDisplay(tx) {
+  const category = tx.category || "Uncategorized";
+  return `
+    <span class="category-pill">${escapeHtml(category)}</span>
+    <button class="icon-inline" data-edit-category="${tx.id}" data-current-category="${escapeHtml(category)}" type="button" title="Edit category" aria-label="Edit category">✎</button>
+  `;
+}
+
+function renderCategorySelector(tx) {
   return `
     <select class="category-select" data-category-transaction="${tx.id}">
       <option value="">Uncategorized</option>
-      ${MASTER_CATEGORIES.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}
+      ${MASTER_CATEGORIES.map((category) => `<option value="${escapeHtml(category)}" ${category === tx.category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}
     </select>
   `;
 }
 
 async function renderMonthAhead() {
   const data = await api("/api/month-ahead");
-  setSummary(data.estimate);
   const page = $("#page-month");
   const manualGuesses = data.guesses.filter((guess) => guess.manual);
   const autoGuesses = data.guesses.filter((guess) => !guess.manual);
   page.innerHTML = `
     <section class="panel">
-      <p class="muted">Estimated next 30 days: Cash ${money(data.estimate.cash)}, Debt ${money(data.estimate.debt)}, Net ${money(data.estimate.net)}</p>
+      <p class="muted">Estimated next 30 days: <strong>Cash ${money(data.estimate.cash)}, Debt ${money(data.estimate.debt)}, Net ${money(data.estimate.net)}</strong></p>
       <p class="muted">Includes ${money(data.deltas?.income || 0)} expected income and ${money(data.deltas?.obligations || 0)} expected bills/payments.</p>
     </section>
     <section class="panel grid">

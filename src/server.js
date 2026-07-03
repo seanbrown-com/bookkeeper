@@ -624,9 +624,9 @@ function buildMetrics(session, { startDate, endDate }) {
   return {
     startDate,
     endDate,
-    net: netSeries,
-    nonRecurringExpenses: expenseSeries,
-    creditCardPayments: creditCardPaymentSeries,
+    net: downsampleSeries(netSeries, 90),
+    nonRecurringExpenses: downsampleSeries(expenseSeries, 90),
+    creditCardPayments: downsampleSeries(creditCardPaymentSeries, 90),
     nonRecurringExpenseCategories: [...expenseCategories.entries()]
       .map(([category, value]) => ({ category, value: Number(value.toFixed(2)) }))
       .sort((a, b) => b.value - a.value || a.category.localeCompare(b.category)),
@@ -634,6 +634,16 @@ function buildMetrics(session, { startDate, endDate }) {
       .map((item) => ({ ...item, value: Number(item.value.toFixed(2)), category: categoryNameForMcc(item.mcc) }))
       .sort((a, b) => b.value - a.value || a.mcc.localeCompare(b.mcc)),
   };
+}
+
+function downsampleSeries(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const sampled = [];
+  const lastIndex = points.length - 1;
+  for (let index = 0; index < maxPoints; index += 1) {
+    sampled.push(points[Math.round((lastIndex * index) / (maxPoints - 1))]);
+  }
+  return sampled;
 }
 
 function categoryNameForTransaction(tx, categoryRules = []) {

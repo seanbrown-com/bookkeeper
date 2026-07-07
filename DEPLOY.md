@@ -95,10 +95,10 @@ Inside the LXC, pull the latest code and restart:
 
 ```bash
 cd /opt/bookkeeper
-bash scripts/install-lxc.sh
+bash scripts/update-service.sh
 ```
 
-This updates the git checkout and dependencies. It preserves ignored runtime files such as `/opt/bookkeeper/.env` and `/opt/bookkeeper/data/`.
+This updates the git checkout, refreshes dependencies, runs a build step if one exists, and restarts the service. It preserves ignored runtime files such as `/opt/bookkeeper/.env` and `/opt/bookkeeper/data/`.
 
 ## Useful Commands
 

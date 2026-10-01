@@ -93,6 +93,8 @@ export async function openAppDb() {
       ON transactions(account_id, sort_date DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_transactions_date
       ON transactions(sort_date DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_transactions_external
+      ON transactions(account_id, source, external_id);
 
     CREATE TABLE IF NOT EXISTS simplefin_connections (
       id TEXT PRIMARY KEY,
@@ -383,9 +385,11 @@ export function normalizeText(value = "") {
 }
 
 export function transactionFingerprint(accountId, tx) {
+  if (tx.externalId) {
+    return sha256([accountId, tx.source || "manual", tx.externalId].join("|"));
+  }
   const base = [
     accountId,
-    tx.externalId || "",
     tx.date || "",
     Number(tx.amount || 0).toFixed(2),
     tx.balance === null || tx.balance === undefined ? "" : Number(tx.balance).toFixed(2),
@@ -395,12 +399,66 @@ export function transactionFingerprint(accountId, tx) {
   return sha256(base);
 }
 
+function dateDistanceDays(a, b) {
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  const first = new Date(`${a}T12:00:00`).getTime();
+  const second = new Date(`${b}T12:00:00`).getTime();
+  if (Number.isNaN(first) || Number.isNaN(second)) return Number.POSITIVE_INFINITY;
+  return Math.abs(first - second) / (1000 * 60 * 60 * 24);
+}
+
+function pendingMatchScore(incoming, existing) {
+  if (!existing.pending || incoming.pending) return 0;
+  if (Math.abs(Number(existing.amount || 0) - Number(incoming.amount || 0)) > 0.01) return 0;
+  if (dateDistanceDays(existing.date, incoming.date) > 5) return 0;
+  const incomingText = normalizeText(incoming.description || "");
+  const existingText = normalizeText(existing.description || "");
+  if (!incomingText || !existingText) return 0;
+  if (incomingText === existingText) return 1;
+  if (incomingText.includes(existingText) || existingText.includes(incomingText)) return 0.9;
+  const incomingWords = new Set(incomingText.split(" ").filter((word) => word.length > 2));
+  const existingWords = new Set(existingText.split(" ").filter((word) => word.length > 2));
+  if (!incomingWords.size || !existingWords.size) return 0;
+  const overlap = [...incomingWords].filter((word) => existingWords.has(word)).length;
+  return overlap / Math.max(incomingWords.size, existingWords.size);
+}
+
+function findPendingMatch(db, session, accountId, payload) {
+  if (payload.pending) return null;
+  const rows = db.prepare(`
+    SELECT * FROM transactions
+    WHERE account_id = ? AND source = ?
+      AND sort_date >= date(?, '-5 days')
+      AND sort_date <= date(?, '+5 days')
+    ORDER BY sort_date DESC, id DESC
+  `).all(accountId, payload.source, payload.date, payload.date);
+  let best = null;
+  let bestScore = 0;
+  for (const row of rows) {
+    const existing = decodeTransaction(session, row);
+    const score = pendingMatchScore(payload, existing);
+    if (score > bestScore) {
+      best = row;
+      bestScore = score;
+    }
+  }
+  return bestScore >= 0.75 ? best : null;
+}
+
+function updateTransactionRow(db, session, row, payload, fingerprint, searchKey, now) {
+  const encryptedPayload = encryptJson(session.dataKey, { ...payload, id: row.id });
+  db.prepare(`
+    UPDATE transactions
+    SET sort_date = ?, source = ?, external_id = ?, fingerprint = ?, search_key = ?, encrypted_payload = ?, updated_at = ?
+    WHERE id = ?
+  `).run(payload.date, payload.source, payload.externalId, fingerprint, searchKey, encryptedPayload, now, row.id);
+  return { id: row.id, inserted: false };
+}
+
 export function upsertTransaction(db, session, accountId, tx) {
   const now = nowIso();
-  const fingerprint = transactionFingerprint(accountId, tx);
-  const id = tx.id || `tx_${fingerprint.slice(0, 24)}`;
   const payload = {
-    id,
+    id: tx.id || null,
     accountId,
     date: tx.date,
     description: tx.description || "",
@@ -413,17 +471,34 @@ export function upsertTransaction(db, session, accountId, tx) {
     mcc: normalizeMcc(tx.mcc ?? tx.raw?.mcc),
     raw: tx.raw || null,
   };
+  const fingerprint = transactionFingerprint(accountId, payload);
+  const id = payload.id || `tx_${fingerprint.slice(0, 24)}`;
+  payload.id = id;
   const encryptedPayload = encryptJson(session.dataKey, payload);
   const searchKey = normalizeText(payload.description);
-  const existing = db.prepare("SELECT id FROM transactions WHERE fingerprint = ?").get(fingerprint);
-  if (existing) {
-    db.prepare(`
-      UPDATE transactions
-      SET sort_date = ?, source = ?, external_id = ?, search_key = ?, encrypted_payload = ?, updated_at = ?
-      WHERE fingerprint = ?
-    `).run(payload.date, payload.source, payload.externalId, searchKey, encryptedPayload, now, fingerprint);
-    return { id: existing.id, inserted: false };
+
+  const existingByFingerprint = db.prepare("SELECT * FROM transactions WHERE fingerprint = ?").get(fingerprint);
+  if (existingByFingerprint) {
+    return updateTransactionRow(db, session, existingByFingerprint, payload, fingerprint, searchKey, now);
   }
+
+  if (payload.externalId) {
+    const existingByExternalId = db.prepare(`
+      SELECT * FROM transactions
+      WHERE account_id = ? AND source = ? AND external_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(accountId, payload.source, payload.externalId);
+    if (existingByExternalId) {
+      return updateTransactionRow(db, session, existingByExternalId, payload, fingerprint, searchKey, now);
+    }
+  }
+
+  const pendingMatch = findPendingMatch(db, session, accountId, payload);
+  if (pendingMatch) {
+    return updateTransactionRow(db, session, pendingMatch, payload, fingerprint, searchKey, now);
+  }
+
   db.prepare(`
     INSERT INTO transactions (
       id, account_id, sort_date, source, external_id, fingerprint, search_key,
@@ -442,6 +517,68 @@ export function upsertTransaction(db, session, accountId, tx) {
     now,
   );
   return { id, inserted: true };
+}
+
+function chooseDuplicateKeeper(items) {
+  return [...items].sort((a, b) => {
+    if (a.tx.pending !== b.tx.pending) return a.tx.pending ? 1 : -1;
+    const dateCompare = String(b.tx.date || "").localeCompare(String(a.tx.date || ""));
+    if (dateCompare) return dateCompare;
+    return String(b.row.updated_at || "").localeCompare(String(a.row.updated_at || ""));
+  })[0];
+}
+
+export function dedupeAccountTransactions(
+  db,
+  session,
+  accountId,
+  { source = "simplefin", startDate = null, endDate = null, returnedExternalIds = null } = {},
+) {
+  const rows = db.prepare("SELECT * FROM transactions WHERE account_id = ? AND source = ? ORDER BY sort_date DESC, id DESC").all(accountId, source);
+  const items = rows.map((row) => ({ row, tx: decodeTransaction(session, row) }));
+  const deleteIds = new Set();
+
+  const byExternalId = new Map();
+  for (const item of items) {
+    if (!item.tx.externalId) continue;
+    const key = item.tx.externalId;
+    if (!byExternalId.has(key)) byExternalId.set(key, []);
+    byExternalId.get(key).push(item);
+  }
+  for (const duplicates of byExternalId.values()) {
+    if (duplicates.length < 2) continue;
+    const keep = chooseDuplicateKeeper(duplicates);
+    for (const item of duplicates) {
+      if (item.row.id !== keep.row.id) deleteIds.add(item.row.id);
+    }
+  }
+
+  const posted = items.filter((item) => !deleteIds.has(item.row.id) && !item.tx.pending);
+  const pending = items.filter((item) => !deleteIds.has(item.row.id) && item.tx.pending);
+  for (const pendingItem of pending) {
+    const match = posted.find((postedItem) => pendingMatchScore(postedItem.tx, pendingItem.tx) >= 0.75);
+    if (match) deleteIds.add(pendingItem.row.id);
+  }
+
+  let staleDeleted = 0;
+  if (startDate && endDate && returnedExternalIds) {
+    const returned = new Set([...returnedExternalIds].filter(Boolean));
+    for (const item of items) {
+      if (deleteIds.has(item.row.id)) continue;
+      if (item.tx.date < startDate || item.tx.date > endDate) continue;
+      const generatedCorrection = item.tx.type === "BALANCE_CORRECTION"
+        || String(item.tx.externalId || "").startsWith("correction_");
+      if (generatedCorrection) continue;
+      if (item.tx.externalId && returned.has(item.tx.externalId)) continue;
+      deleteIds.add(item.row.id);
+      staleDeleted += 1;
+    }
+  }
+
+  if (!deleteIds.size) return { deleted: 0, staleDeleted: 0 };
+  const remove = db.prepare("DELETE FROM transactions WHERE id = ?");
+  for (const id of deleteIds) remove.run(id);
+  return { deleted: deleteIds.size, staleDeleted };
 }
 
 export function decodeTransaction(session, row) {

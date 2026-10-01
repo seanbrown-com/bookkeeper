@@ -8,6 +8,7 @@ import {
   changePassword,
   createManualAccount,
   createSyncJob,
+  dedupeAccountTransactions,
   deleteSimpleFinConnection,
   finishSyncJob,
   getMeta,
@@ -313,6 +314,17 @@ async function handleApi(req, res) {
       startDate: body.startDate,
       endDate: body.endDate,
       kind: "manual",
+    });
+    sendJson(res, 202, job);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/settings/simplefin/force-today") {
+    const today = todayIso();
+    const job = startSimpleFinRangeJob(session, {
+      startDate: today,
+      endDate: today,
+      kind: "force-today",
     });
     sendJson(res, 202, job);
     return;
@@ -834,12 +846,6 @@ function dateRange(startDate, endDate) {
   return dates;
 }
 
-function addDays(date, days) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
 async function refreshSimpleFin(session, { force = false, chunks = 1 } = {}) {
   const connections = listSimpleFinConnections(db, session, true);
   let accountsImported = 0;
@@ -924,8 +930,11 @@ async function runSimpleFinRangeJob(session, { id, startDate, endDate, kind }) {
     accountsImported: 0,
     transactionsImported: 0,
     correctionsInserted: 0,
+    duplicatesRemoved: 0,
+    staleRemoved: 0,
     chunks: chunks.length,
     errors: [],
+    accountDiagnostics: [],
   };
 
   for (const chunk of chunks) {
@@ -933,7 +942,10 @@ async function runSimpleFinRangeJob(session, { id, startDate, endDate, kind }) {
     totals.accountsImported += result.accountsImported;
     totals.transactionsImported += result.transactionsImported;
     totals.correctionsInserted += result.correctionsInserted;
+    totals.duplicatesRemoved += result.duplicatesRemoved;
+    totals.staleRemoved += result.staleRemoved;
     totals.errors.push(...result.errors);
+    totals.accountDiagnostics.push(...result.accountDiagnostics.map((item) => ({ ...item, chunk })));
   }
 
   if (kind === "manual" && !totals.errors.length) {
@@ -956,7 +968,10 @@ async function refreshSimpleFinRange(session, { startDate, endDate }) {
   let accountsImported = 0;
   let transactionsImported = 0;
   let correctionsInserted = 0;
+  let duplicatesRemoved = 0;
+  let staleRemoved = 0;
   const errors = [];
+  const accountDiagnostics = [];
   const startSeconds = dateToUnix(startDate, false);
   const endSeconds = dateToUnix(endDate, true);
 
@@ -967,17 +982,24 @@ async function refreshSimpleFinRange(session, { startDate, endDate }) {
         endDate: endSeconds,
         pending: endDate === todayIso(),
       });
-      const chunkResult = importSimpleFinAccountSet(session, accountSet);
+      const chunkResult = importSimpleFinAccountSet(session, accountSet, {
+        connectionId: connection.id,
+        startDate,
+        endDate,
+      });
       accountsImported += chunkResult.accountsImported;
       transactionsImported += chunkResult.transactionsImported;
       correctionsInserted += chunkResult.correctionsInserted;
+      duplicatesRemoved += chunkResult.duplicatesRemoved;
+      staleRemoved += chunkResult.staleRemoved;
+      accountDiagnostics.push(...chunkResult.accountDiagnostics);
       markSimpleFinSynced(db, connection.id);
     } catch (error) {
       errors.push({ connectionId: connection.id, message: error.message, startDate, endDate });
     }
   }
 
-  return { accountsImported, transactionsImported, correctionsInserted, errors };
+  return { accountsImported, transactionsImported, correctionsInserted, duplicatesRemoved, staleRemoved, errors, accountDiagnostics };
 }
 
 function buildDateChunks(startDate, endDate) {
@@ -1016,6 +1038,12 @@ function todayIso() {
   return isoDate(new Date());
 }
 
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
 function schedulerTick() {
   const settings = getSyncSettings();
   if (!settings.dailyEnabled || !settings.firstUserPullAt || !settings.lastPulledThrough) return;
@@ -1026,15 +1054,30 @@ function schedulerTick() {
   lastSchedulerMinute = minuteKey;
   if (now.getMinutes() !== 0 || now.getHours() !== Number(settings.dailyHour)) return;
 
-  const startDate = settings.lastPulledThrough;
+  const startDate = bufferedDailyStartDate(unlockedSession, settings.lastPulledThrough);
   const endDate = todayIso();
   startSimpleFinRangeJob(unlockedSession, { startDate, endDate, kind: "daily" });
 }
 
-function importSimpleFinAccountSet(session, accountSet) {
+function bufferedDailyStartDate(session, fallbackDate) {
+  const accounts = listAccounts(db, session).filter((account) => account.source === "simplefin" && !account.hidden);
+  const txs = listAllTransactions(db, session);
+  const latestDates = accounts
+    .map((account) => txs.filter((tx) => tx.accountId === account.id).map((tx) => tx.date).sort().at(-1))
+    .filter(Boolean);
+  if (!latestDates.length) return fallbackDate;
+  const earliestLatest = latestDates.sort()[0];
+  const buffered = isoDate(addDays(parseLocalDate(earliestLatest), -5));
+  return [buffered, fallbackDate].filter(Boolean).sort()[0];
+}
+
+function importSimpleFinAccountSet(session, accountSet, { connectionId = null, startDate = null, endDate = null } = {}) {
   let accountsImported = 0;
   let transactionsImported = 0;
   let correctionsInserted = 0;
+  let duplicatesRemoved = 0;
+  let staleRemoved = 0;
+  const accountDiagnostics = [];
 
   for (const account of accountSet.accounts || []) {
     const savedAccount = upsertAccount(db, session, {
@@ -1052,10 +1095,13 @@ function importSimpleFinAccountSet(session, accountSet) {
       },
     });
     accountsImported += 1;
+    let accountInserted = 0;
+    const returnedDates = [];
     for (const tx of account.transactions || []) {
       const date = tx.posted
         ? new Date(tx.posted * 1000).toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10);
+      returnedDates.push(date);
       const result = upsertTransaction(db, session, savedAccount.id, {
         date,
         description: tx.description,
@@ -1066,7 +1112,10 @@ function importSimpleFinAccountSet(session, accountSet) {
         source: "simplefin",
         raw: tx,
       });
-      if (result.inserted) transactionsImported += 1;
+      if (result.inserted) {
+        transactionsImported += 1;
+        accountInserted += 1;
+      }
     }
 
     if (account["balance-date"] && account.balance !== undefined) {
@@ -1079,9 +1128,37 @@ function importSimpleFinAccountSet(session, accountSet) {
       });
       if (correction.inserted) correctionsInserted += 1;
     }
+
+    const dedupe = dedupeAccountTransactions(db, session, savedAccount.id, {
+      source: "simplefin",
+      startDate,
+      endDate,
+      returnedExternalIds: new Set((account.transactions || []).map((tx) => tx.id).filter(Boolean)),
+    });
+    duplicatesRemoved += dedupe.deleted;
+    staleRemoved += dedupe.staleDeleted;
+
+    const storedLatestDate = listAllTransactions(db, session)
+      .filter((tx) => tx.accountId === savedAccount.id)
+      .map((tx) => tx.date)
+      .sort()
+      .at(-1) || null;
+    accountDiagnostics.push({
+      connectionId,
+      simplefinAccountId: account.id,
+      accountId: savedAccount.id,
+      name: account.name,
+      transactionsReturned: (account.transactions || []).length,
+      transactionsInserted: accountInserted,
+      duplicatesRemoved: dedupe.deleted,
+      staleRemoved: dedupe.staleDeleted,
+      latestReturnedDate: returnedDates.sort().at(-1) || null,
+      latestStoredDate: storedLatestDate,
+      balanceDate: account["balance-date"] ? new Date(Number(account["balance-date"]) * 1000).toISOString().slice(0, 10) : null,
+    });
   }
 
-  return { accountsImported, transactionsImported, correctionsInserted };
+  return { accountsImported, transactionsImported, correctionsInserted, duplicatesRemoved, staleRemoved, accountDiagnostics };
 }
 
 async function createImportPreview(session, body) {

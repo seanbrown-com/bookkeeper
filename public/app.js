@@ -731,6 +731,40 @@ async function previewImport() {
   });
 }
 
+function renderSyncJob(job) {
+  const details = job.details || {};
+  const diagnostics = details.accountDiagnostics || [];
+  const returned = diagnostics.reduce((sum, item) => sum + Number(item.transactionsReturned || 0), 0);
+  const cleanup = details.duplicatesRemoved || details.staleRemoved
+    ? `, removed ${details.duplicatesRemoved || 0}, missing ${details.staleRemoved || 0}`
+    : "";
+  const totals = `accounts ${details.accountsImported ?? "?"}, returned ${returned}, inserted ${details.transactionsImported ?? "?"}${cleanup}`;
+  return `
+    <div class="panel sync-job-card">
+      <strong>${escapeHtml(job.kind)}: ${escapeHtml(job.status)}</strong>
+      <p class="muted">${job.started_at}${job.finished_at ? ` to ${job.finished_at}` : ""}</p>
+      <p class="muted">${escapeHtml(totals)}${details.errors?.length ? `, errors ${details.errors.length}` : ""}</p>
+      ${diagnostics.length ? `
+        <details>
+          <summary>Account diagnostics</summary>
+          <div class="sync-diagnostics">
+            ${diagnostics.map((item) => `
+              <span>${escapeHtml(item.name || item.accountId || "Account")}</span>
+              <span class="muted">returned ${item.transactionsReturned ?? 0}</span>
+              <span class="muted">inserted ${item.transactionsInserted ?? 0}</span>
+              <span class="muted">removed ${item.duplicatesRemoved ?? 0}</span>
+              <span class="muted">missing ${item.staleRemoved ?? 0}</span>
+              <span class="muted">latest returned ${item.latestReturnedDate || "none"}</span>
+              <span class="muted">latest stored ${item.latestStoredDate || "none"}</span>
+              <span class="muted">balance ${item.balanceDate || "none"}</span>
+            `).join("")}
+          </div>
+        </details>
+      ` : `<p class="muted">No per-account diagnostics recorded for this older job.</p>`}
+    </div>
+  `;
+}
+
 async function renderSettings() {
   const settings = await api("/api/settings/simplefin");
   const allAccounts = settings.accounts;
@@ -750,6 +784,7 @@ async function renderSettings() {
         <label>End date <input id="sf-end-date" type="date" /></label>
       </div>
       <button id="refresh-simplefin" class="secondary" type="button">Start Pull Job</button>
+      <button id="force-today-simplefin" class="secondary" type="button">Force Sync Today</button>
       <h3>Daily Pull</h3>
       <div class="grid two">
         <label>Hour
@@ -767,7 +802,7 @@ async function renderSettings() {
       </div>
       <h3>Sync Jobs</h3>
       <div class="table-like">
-        ${settings.jobs.map((job) => `<div class="panel"><strong>${job.kind}: ${job.status}</strong><p class="muted">${job.started_at}${job.finished_at ? ` to ${job.finished_at}` : ""}</p><p class="muted">${escapeHtml(JSON.stringify(job.details || {}))}</p></div>`).join("") || `<p class="muted">No sync jobs yet.</p>`}
+        ${settings.jobs.map(renderSyncJob).join("") || `<p class="muted">No sync jobs yet.</p>`}
       </div>
     </section>
     <section class="panel grid">
@@ -821,6 +856,11 @@ async function renderSettings() {
       }),
     });
     toast(`Started sync job ${result.id}`);
+    await renderSettings();
+  });
+  $("#force-today-simplefin").addEventListener("click", async () => {
+    const result = await api("/api/settings/simplefin/force-today", { method: "POST" });
+    toast(`Started force sync ${result.id}`);
     await renderSettings();
   });
   $("#save-sync-settings").addEventListener("click", async () => {

@@ -464,6 +464,22 @@ label {
   font-weight: 800;
 }
 
+.sync-diagnostics {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(7, minmax(100px, 1fr));
+  margin-top: 10px;
+  overflow-x: auto;
+  padding-top: 10px;
+}
+
+.sync-job-card summary {
+  color: var(--green-dark);
+  cursor: pointer;
+  font-weight: 800;
+}
+
 .mcc-grid {
   display: grid;
   gap: 8px 12px;

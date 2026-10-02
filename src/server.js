@@ -985,6 +985,7 @@ async function refreshSimpleFinRange(session, { startDate, endDate }) {
       });
       const chunkResult = importSimpleFinAccountSet(session, accountSet, {
         connectionId: connection.id,
+        connectionLabel: connection.label,
         startDate,
         endDate,
         pendingRequested,
@@ -1094,7 +1095,14 @@ function bufferedDailyStartDate(session, fallbackDate) {
 function importSimpleFinAccountSet(
   session,
   accountSet,
-  { connectionId = null, startDate = null, endDate = null, pendingRequested = false, accountsReturned = null } = {},
+  {
+    connectionId = null,
+    connectionLabel = null,
+    startDate = null,
+    endDate = null,
+    pendingRequested = false,
+    accountsReturned = null,
+  } = {},
 ) {
   let accountsImported = 0;
   let transactionsImported = 0;
@@ -1184,6 +1192,7 @@ function importSimpleFinAccountSet(
       .at(-1) || null;
     accountDiagnostics.push({
       connectionId,
+      connectionLabel,
       simplefinAccountId: account.id,
       accountId: savedAccount.id,
       name: account.name,
@@ -1221,6 +1230,7 @@ function importSimpleFinAccountSet(
         .at(-1) || null;
       accountDiagnostics.push({
         connectionId,
+        connectionLabel,
         simplefinAccountId: account.externalId,
         accountId: account.id,
         name: account.name,

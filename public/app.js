@@ -750,6 +750,7 @@ function renderSyncJob(job) {
           <div class="sync-diagnostics">
             ${diagnostics.map((item) => `
               <span>${escapeHtml(item.name || item.accountId || "Account")}${item.accountMissingFromResponse ? ` <strong class="danger-text">missing account</strong>` : ""}</span>
+              <span class="muted">connection ${escapeHtml(item.connectionLabel || item.connectionId || "?")}</span>
               <span class="muted">range ${item.requestedStartDate || item.chunk?.startDate || "?"} to ${item.requestedEndDate || item.chunk?.endDate || "?"}</span>
               <span class="muted">returned ${item.transactionsReturned ?? 0}</span>
               <span class="muted">posted ${item.postedReturned ?? "?"}</span>

@@ -202,6 +202,7 @@ async function handleApi(req, res) {
     const rules = acceptedRegularRules(db, session);
     sendJson(res, 200, {
       summary: getSummary(db, session),
+      accountHealth: buildAccountHealth(session),
       accounts: visibleAccounts.map((account) => ({
         ...account,
         balance: accountBalance(session, account),
@@ -291,6 +292,7 @@ async function handleApi(req, res) {
       days: config.simplefinDays,
       pending: config.simplefinPending,
       connections: listSimpleFinConnections(db, session),
+      accountHealth: buildAccountHealth(session),
       sync: getSyncSettings(),
       jobs: listSyncJobs(db),
       accounts: listAccounts(db, session),
@@ -459,6 +461,48 @@ function annotateTransactions(transactions, rules = acceptedRegularRules(db), ca
     isRegularLike: isRegularLike(tx, rules),
     category: categoryNameForTransaction(tx, categoryRules),
   }));
+}
+
+function buildAccountHealth(session) {
+  const connections = new Map(listSimpleFinConnections(db, session).map((connection) => [connection.id, connection]));
+  const txs = listAllTransactions(db, session);
+  const staleBalanceDays = 7;
+  const issues = listAccounts(db, session)
+    .filter((account) => account.source === "simplefin" && !account.hidden)
+    .map((account) => {
+      const balanceDate = account.meta?.balanceDate ? unixDate(account.meta.balanceDate) : null;
+      const balanceAgeDays = daysBetweenIso(balanceDate);
+      const latestStoredDate = txs
+        .filter((tx) => tx.accountId === account.id)
+        .map((tx) => tx.date)
+        .sort()
+        .at(-1) || null;
+      const connection = connections.get(account.meta?.connectionId);
+      const reasons = [];
+      if (!balanceDate) reasons.push("missing balance date");
+      else if (balanceAgeDays > staleBalanceDays) reasons.push(`balance ${balanceAgeDays} days old`);
+      if (!reasons.length) return null;
+      return {
+        accountId: account.id,
+        name: account.name,
+        org: account.meta?.org || null,
+        connectionId: account.meta?.connectionId || null,
+        connectionLabel: connection?.label || account.meta?.connectionId || null,
+        balanceDate,
+        balanceAgeDays,
+        latestStoredDate,
+        reasons,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.balanceAgeDays || 9999) - (a.balanceAgeDays || 9999));
+
+  return {
+    bridgeUrl: config.simplefinCreateUrl,
+    staleBalanceDays,
+    issueCount: issues.length,
+    issues,
+  };
 }
 
 function buildRawFieldDiagnostics(session) {

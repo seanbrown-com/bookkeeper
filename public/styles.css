@@ -186,6 +186,30 @@ label {
   color: white;
 }
 
+.health-alert {
+  align-items: center;
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line));
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+}
+
+.health-alert p {
+  margin: 3px 0 0;
+}
+
+.health-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+}
+
 .page {
   display: grid;
   gap: 14px;

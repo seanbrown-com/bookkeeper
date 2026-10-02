@@ -2,6 +2,7 @@ const state = {
   configured: false,
   authenticated: false,
   accounts: [],
+  accountHealth: null,
   txOffset: 0,
   txDone: false,
   txLoading: false,
@@ -108,7 +109,9 @@ async function renderApp() {
 async function loadBootstrap() {
   const data = await api("/api/bootstrap");
   state.accounts = data.accounts;
+  state.accountHealth = data.accountHealth || null;
   setSummary(data.summary);
+  renderAccountHealthAlert(state.accountHealth);
   renderDashboard(data.accounts);
 }
 
@@ -161,6 +164,51 @@ async function showPage(page) {
   if (page === "import") renderImport();
   if (page === "settings") await renderSettings();
   if (page === "activity") await renderActivity();
+}
+
+function renderAccountHealthAlert(health) {
+  const el = $("#account-health-alerts");
+  if (!el) return;
+  if (!health?.issueCount) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  const top = health.issues.slice(0, 3).map((issue) => escapeHtml(issue.name)).join(", ");
+  el.className = "health-alert";
+  el.innerHTML = `
+    <div>
+      <strong>${health.issueCount} account${health.issueCount === 1 ? "" : "s"} may need a SimpleFIN refresh</strong>
+      <p class="muted">${top}${health.issueCount > 3 ? "…" : ""}</p>
+    </div>
+    <button id="view-health-settings" class="secondary" type="button">Review</button>
+  `;
+  $("#view-health-settings")?.addEventListener("click", () => showPage("settings"));
+}
+
+function renderAccountHealthDetails(health) {
+  if (!health?.issueCount) {
+    return `<section class="panel"><h2>Account Health</h2><p class="muted">All SimpleFIN account balance dates look current.</p></section>`;
+  }
+  return `
+    <section class="panel grid">
+      <h2>Account Health</h2>
+      <p class="muted">These accounts have stale or missing SimpleFIN balance dates. Refresh or reconnect the institution in SimpleFIN Bridge, then run a manual pull.</p>
+      <a href="${health.bridgeUrl}" target="_blank" rel="noreferrer"><button type="button">Open SimpleFIN Bridge</button></a>
+      <div class="table-like">
+        ${health.issues.map((issue) => `
+          <div class="health-row">
+            <strong>${escapeHtml(issue.name)}</strong>
+            <span class="muted">${escapeHtml(issue.org || "Unknown institution")}</span>
+            <span class="muted">Connection: ${escapeHtml(issue.connectionLabel || issue.connectionId || "Unknown")}</span>
+            <span class="muted">Balance: ${issue.balanceDate || "missing"}${issue.balanceAgeDays !== null && issue.balanceAgeDays !== undefined ? ` (${issue.balanceAgeDays}d old)` : ""}</span>
+            <span class="muted">Latest transaction: ${issue.latestStoredDate || "none"}</span>
+            <span class="danger-text">${issue.reasons.map(escapeHtml).join(", ")}</span>
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function renderDashboard(accounts) {
@@ -776,11 +824,14 @@ function renderSyncJob(job) {
 
 async function renderSettings() {
   const settings = await api("/api/settings/simplefin");
+  state.accountHealth = settings.accountHealth || null;
+  renderAccountHealthAlert(state.accountHealth);
   const allAccounts = settings.accounts;
   const hiddenAccounts = settings.accounts.filter((account) => account.hidden);
   const dailyEnabledDisabled = !settings.sync.firstUserPullAt ? "disabled" : "";
   const page = $("#page-settings");
   page.innerHTML = `
+    ${renderAccountHealthDetails(settings.accountHealth)}
     <section class="panel grid">
       <h2>SimpleFIN</h2>
       <a href="${settings.createUrl}" target="_blank" rel="noreferrer"><button type="button">Get setup token</button></a>

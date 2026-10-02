@@ -1042,6 +1042,14 @@ function unixDate(value) {
   return value ? new Date(Number(value) * 1000).toISOString().slice(0, 10) : null;
 }
 
+function daysBetweenIso(start, end = todayIso()) {
+  if (!start) return null;
+  const first = parseLocalDate(start).getTime();
+  const second = parseLocalDate(end).getTime();
+  if (Number.isNaN(first) || Number.isNaN(second)) return null;
+  return Math.floor((second - first) / (1000 * 60 * 60 * 24));
+}
+
 function simpleFinTransactionDate(tx) {
   return unixDate(tx.posted) || unixDate(tx.transacted_at) || todayIso();
 }
@@ -1214,7 +1222,9 @@ function importSimpleFinAccountSet(
       latestPostedDate: postedDates.sort().at(-1) || null,
       latestTransactedDate: transactedDates.sort().at(-1) || null,
       latestStoredDate: storedLatestDate,
+      org: account.org || null,
       balanceDate: unixDate(account["balance-date"]),
+      balanceAgeDays: daysBetweenIso(unixDate(account["balance-date"])),
     });
   }
 
@@ -1252,7 +1262,9 @@ function importSimpleFinAccountSet(
         latestPostedDate: null,
         latestTransactedDate: null,
         latestStoredDate: storedLatestDate,
+        org: account.meta?.org || null,
         balanceDate: account.meta?.balanceDate ? unixDate(account.meta.balanceDate) : null,
+        balanceAgeDays: account.meta?.balanceDate ? daysBetweenIso(unixDate(account.meta.balanceDate)) : null,
       });
     }
   }

@@ -751,6 +751,7 @@ function renderSyncJob(job) {
             ${diagnostics.map((item) => `
               <span>${escapeHtml(item.name || item.accountId || "Account")}${item.accountMissingFromResponse ? ` <strong class="danger-text">missing account</strong>` : ""}</span>
               <span class="muted">connection ${escapeHtml(item.connectionLabel || item.connectionId || "?")}</span>
+              <span class="muted">org ${escapeHtml(item.org || "?")}</span>
               <span class="muted">range ${item.requestedStartDate || item.chunk?.startDate || "?"} to ${item.requestedEndDate || item.chunk?.endDate || "?"}</span>
               <span class="muted">returned ${item.transactionsReturned ?? 0}</span>
               <span class="muted">posted ${item.postedReturned ?? "?"}</span>
@@ -764,7 +765,7 @@ function renderSyncJob(job) {
               <span class="muted">latest posted ${item.latestPostedDate || "none"}</span>
               <span class="muted">latest transacted ${item.latestTransactedDate || "none"}</span>
               <span class="muted">latest stored ${item.latestStoredDate || "none"}</span>
-              <span class="muted">balance ${item.balanceDate || "none"}</span>
+              <span class="muted">balance ${item.balanceDate || "none"}${item.balanceAgeDays !== null && item.balanceAgeDays !== undefined ? ` (${item.balanceAgeDays}d)` : ""}</span>
             `).join("")}
           </div>
         </details>

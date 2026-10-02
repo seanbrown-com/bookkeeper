@@ -749,12 +749,19 @@ function renderSyncJob(job) {
           <summary>Account diagnostics</summary>
           <div class="sync-diagnostics">
             ${diagnostics.map((item) => `
-              <span>${escapeHtml(item.name || item.accountId || "Account")}</span>
+              <span>${escapeHtml(item.name || item.accountId || "Account")}${item.accountMissingFromResponse ? ` <strong class="danger-text">missing account</strong>` : ""}</span>
+              <span class="muted">range ${item.requestedStartDate || item.chunk?.startDate || "?"} to ${item.requestedEndDate || item.chunk?.endDate || "?"}</span>
               <span class="muted">returned ${item.transactionsReturned ?? 0}</span>
+              <span class="muted">posted ${item.postedReturned ?? "?"}</span>
+              <span class="muted">pending ${item.pendingReturned ?? "?"}${item.pendingRequested ? " requested" : ""}</span>
+              <span class="muted">no posted ${item.missingPostedDate ?? "?"}</span>
               <span class="muted">inserted ${item.transactionsInserted ?? 0}</span>
               <span class="muted">removed ${item.duplicatesRemoved ?? 0}</span>
               <span class="muted">missing ${item.staleRemoved ?? 0}</span>
+              <span class="muted">stored ${item.storedInRangeBefore ?? "?"}->${item.storedInRangeAfter ?? "?"}</span>
               <span class="muted">latest returned ${item.latestReturnedDate || "none"}</span>
+              <span class="muted">latest posted ${item.latestPostedDate || "none"}</span>
+              <span class="muted">latest transacted ${item.latestTransactedDate || "none"}</span>
               <span class="muted">latest stored ${item.latestStoredDate || "none"}</span>
               <span class="muted">balance ${item.balanceDate || "none"}</span>
             `).join("")}

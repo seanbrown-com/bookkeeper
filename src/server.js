@@ -977,15 +977,18 @@ async function refreshSimpleFinRange(session, { startDate, endDate }) {
 
   for (const connection of connections) {
     try {
+      const pendingRequested = endDate === todayIso();
       const accountSet = await fetchAccounts(connection.accessUrl, {
         startDate: startSeconds,
         endDate: endSeconds,
-        pending: endDate === todayIso(),
+        pending: pendingRequested,
       });
       const chunkResult = importSimpleFinAccountSet(session, accountSet, {
         connectionId: connection.id,
         startDate,
         endDate,
+        pendingRequested,
+        accountsReturned: (accountSet.accounts || []).length,
       });
       accountsImported += chunkResult.accountsImported;
       transactionsImported += chunkResult.transactionsImported;
@@ -1034,6 +1037,23 @@ function dateToUnix(value, endOfDay = false) {
   return Math.floor(date.getTime() / 1000);
 }
 
+function unixDate(value) {
+  return value ? new Date(Number(value) * 1000).toISOString().slice(0, 10) : null;
+}
+
+function simpleFinTransactionDate(tx) {
+  return unixDate(tx.posted) || unixDate(tx.transacted_at) || todayIso();
+}
+
+function accountRangeCount(session, accountId, startDate, endDate) {
+  if (!startDate || !endDate) return null;
+  return listAllTransactions(db, session)
+    .filter((tx) => tx.accountId === accountId && tx.source === "simplefin")
+    .filter((tx) => tx.date >= startDate && tx.date <= endDate)
+    .filter((tx) => tx.type !== "BALANCE_CORRECTION")
+    .length;
+}
+
 function todayIso() {
   return isoDate(new Date());
 }
@@ -1071,13 +1091,19 @@ function bufferedDailyStartDate(session, fallbackDate) {
   return [buffered, fallbackDate].filter(Boolean).sort()[0];
 }
 
-function importSimpleFinAccountSet(session, accountSet, { connectionId = null, startDate = null, endDate = null } = {}) {
+function importSimpleFinAccountSet(
+  session,
+  accountSet,
+  { connectionId = null, startDate = null, endDate = null, pendingRequested = false, accountsReturned = null } = {},
+) {
   let accountsImported = 0;
   let transactionsImported = 0;
   let correctionsInserted = 0;
   let duplicatesRemoved = 0;
   let staleRemoved = 0;
   const accountDiagnostics = [];
+
+  const returnedAccountIds = new Set((accountSet.accounts || []).map((account) => account.id));
 
   for (const account of accountSet.accounts || []) {
     const savedAccount = upsertAccount(db, session, {
@@ -1092,16 +1118,28 @@ function importSimpleFinAccountSet(session, accountSet, { connectionId = null, s
         availableBalance: Number(account["available-balance"] || account.balance || 0),
         balanceDate: account["balance-date"] || null,
         simplefinTrustedBalance: true,
+        connectionId,
       },
     });
     accountsImported += 1;
+    const storedInRangeBefore = accountRangeCount(session, savedAccount.id, startDate, endDate);
     let accountInserted = 0;
     const returnedDates = [];
+    const postedDates = [];
+    const transactedDates = [];
+    let pendingReturned = 0;
+    let postedReturned = 0;
+    let missingPostedDate = 0;
     for (const tx of account.transactions || []) {
-      const date = tx.posted
-        ? new Date(tx.posted * 1000).toISOString().slice(0, 10)
-        : new Date().toISOString().slice(0, 10);
+      const date = simpleFinTransactionDate(tx);
+      const postedDate = unixDate(tx.posted);
+      const transactedDate = unixDate(tx.transacted_at);
       returnedDates.push(date);
+      if (postedDate) postedDates.push(postedDate);
+      else missingPostedDate += 1;
+      if (transactedDate) transactedDates.push(transactedDate);
+      if (tx.pending) pendingReturned += 1;
+      else postedReturned += 1;
       const result = upsertTransaction(db, session, savedAccount.id, {
         date,
         description: tx.description,
@@ -1138,6 +1176,7 @@ function importSimpleFinAccountSet(session, accountSet, { connectionId = null, s
     duplicatesRemoved += dedupe.deleted;
     staleRemoved += dedupe.staleDeleted;
 
+    const storedInRangeAfter = accountRangeCount(session, savedAccount.id, startDate, endDate);
     const storedLatestDate = listAllTransactions(db, session)
       .filter((tx) => tx.accountId === savedAccount.id)
       .map((tx) => tx.date)
@@ -1148,14 +1187,64 @@ function importSimpleFinAccountSet(session, accountSet, { connectionId = null, s
       simplefinAccountId: account.id,
       accountId: savedAccount.id,
       name: account.name,
+      requestedStartDate: startDate,
+      requestedEndDate: endDate,
+      pendingRequested,
+      accountsReturned,
       transactionsReturned: (account.transactions || []).length,
+      postedReturned,
+      pendingReturned,
+      missingPostedDate,
       transactionsInserted: accountInserted,
       duplicatesRemoved: dedupe.deleted,
       staleRemoved: dedupe.staleDeleted,
+      storedInRangeBefore,
+      storedInRangeAfter,
+      earliestReturnedDate: returnedDates.sort()[0] || null,
       latestReturnedDate: returnedDates.sort().at(-1) || null,
+      latestPostedDate: postedDates.sort().at(-1) || null,
+      latestTransactedDate: transactedDates.sort().at(-1) || null,
       latestStoredDate: storedLatestDate,
-      balanceDate: account["balance-date"] ? new Date(Number(account["balance-date"]) * 1000).toISOString().slice(0, 10) : null,
+      balanceDate: unixDate(account["balance-date"]),
     });
+  }
+
+  if (connectionId) {
+    for (const account of listAccounts(db, session)) {
+      if (account.source !== "simplefin") continue;
+      if (account.meta?.connectionId !== connectionId) continue;
+      if (returnedAccountIds.has(account.externalId)) continue;
+      const storedLatestDate = listAllTransactions(db, session)
+        .filter((tx) => tx.accountId === account.id)
+        .map((tx) => tx.date)
+        .sort()
+        .at(-1) || null;
+      accountDiagnostics.push({
+        connectionId,
+        simplefinAccountId: account.externalId,
+        accountId: account.id,
+        name: account.name,
+        requestedStartDate: startDate,
+        requestedEndDate: endDate,
+        pendingRequested,
+        accountsReturned,
+        accountMissingFromResponse: true,
+        transactionsReturned: 0,
+        postedReturned: 0,
+        pendingReturned: 0,
+        missingPostedDate: 0,
+        transactionsInserted: 0,
+        duplicatesRemoved: 0,
+        staleRemoved: 0,
+        storedInRangeBefore: accountRangeCount(session, account.id, startDate, endDate),
+        storedInRangeAfter: accountRangeCount(session, account.id, startDate, endDate),
+        latestReturnedDate: null,
+        latestPostedDate: null,
+        latestTransactedDate: null,
+        latestStoredDate: storedLatestDate,
+        balanceDate: account.meta?.balanceDate ? unixDate(account.meta.balanceDate) : null,
+      });
+    }
   }
 
   return { accountsImported, transactionsImported, correctionsInserted, duplicatesRemoved, staleRemoved, accountDiagnostics };
